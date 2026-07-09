@@ -543,8 +543,10 @@ function renderFeed(){
   $('rptBtn').addEventListener('click',()=>$('rptForm').classList.toggle('hide'));
   $('rptSt').addEventListener('input',e=>{
     const q=e.target.value.trim();
-    $('stationList').innerHTML=q?DATA.filter(d=>d.station.includes(q)).slice(0,30)
-      .map(d=>`<option value="${d.station}">${d.area}·${d.district}</option>`).join(''):'';
+    let hits=q?DATA.filter(d=>d.area===APP.zone&&d.station.includes(q)):[];
+    if(q&&!hits.length)hits=DATA.filter(d=>d.station.includes(q));
+    $('stationList').innerHTML=hits.slice(0,30)
+      .map(d=>`<option value="${d.station}">${d.area}·${d.district}</option>`).join('');
   });
   $('rptSend').addEventListener('click',async()=>{
     const st=$('rptSt').value.trim(),k=$('rptKind').value,q=+$('rptQty').value;
@@ -588,7 +590,12 @@ function initForm(){
     }).join('')+'</optgroup>';
   }
   $('zoneSel').innerHTML=h;
-  $('stationList').innerHTML=DATA.map(d=>`<option value="${d.station}">${d.area}·${d.district}</option>`).join('');
+  // 選了責任區即預載該區場站;避免一次塞入 3 千+ 站造成手機卡頓
+  $('zoneSel').addEventListener('change',()=>{
+    const z=$('zoneSel').value;
+    $('stationList').innerHTML=z?DATA.filter(d=>d.area===z).slice(0,80)
+      .map(d=>`<option value="${d.station}">${d.district}</option>`).join(''):'';
+  });
   setInterval(()=>$('clock').textContent=clockTxt(),1000);
   $('clock').textContent=clockTxt();
 }
@@ -620,7 +627,20 @@ $('gpsBtn').addEventListener('click',()=>{
     $('locHint').textContent='⚠️ 定位失敗('+err.message+'),請手動輸入場站。';
   },{enableHighAccuracy:true,timeout:10000});
 });
-$('locInput').addEventListener('input',()=>{APP.pos=null;$('locHint').textContent=''});
+$('locInput').addEventListener('input',e=>{
+  APP.pos=null;$('locHint').textContent='';
+  const q=e.target.value.trim();
+  const z=$('zoneSel').value;
+  if(!q){ // 清空時回到該區預載清單
+    $('stationList').innerHTML=z?DATA.filter(d=>d.area===z).slice(0,80)
+      .map(d=>`<option value="${d.station}">${d.district}</option>`).join(''):'';
+    return;
+  }
+  let hits=z?DATA.filter(d=>d.area===z&&d.station.includes(q)):[];
+  if(!hits.length)hits=DATA.filter(d=>d.station.includes(q));  // 區內查無才放寬到全部
+  $('stationList').innerHTML=hits.slice(0,30)
+    .map(d=>`<option value="${d.station}">${d.area}·${d.district}</option>`).join('');
+});
 
 /* ═══ 派發 ═══ */
 $('goBtn').addEventListener('click',async()=>{
