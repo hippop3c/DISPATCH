@@ -20,12 +20,10 @@ body{font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,san
 .wrap{max-width:520px;margin:0 auto;padding:0 14px 90px}
 
 /* ── 頁首:派車單樣式 ── */
-header{background:var(--yb);margin:0 -14px;padding:14px 18px 12px;
+header{background:var(--yb);margin:0 -14px 16px;padding:14px 18px 12px;
   border-bottom:3px solid var(--ink);display:flex;align-items:baseline;justify-content:space-between}
 header h1{font-size:1.15rem;font-weight:900;letter-spacing:.14em}
 header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem}
-.subbar{margin:0 -14px 16px;background:var(--ink);color:var(--yb);
-  font-size:.72rem;letter-spacing:.3em;padding:4px 18px;font-weight:700}
 
 /* ── 表單 ── */
 .form-card{background:var(--card);border:1.5px solid var(--ink);border-radius:10px;
@@ -68,6 +66,9 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
 .fst{flex:none;font-size:.66rem;font-weight:900;border-radius:5px;padding:1px 6px;color:#fff}
 .fst.run{background:#0b62c4}
 .fst.done{background:var(--ok)}
+.fst.todo{background:var(--gray,#6c7a8e)}
+.fme{background:var(--yb);border:1px solid var(--ink);border-radius:4px;
+  font-size:.6rem;font-weight:900;padding:0 4px;margin-left:4px;vertical-align:1px}
 .fkind{font-weight:900}
 .fkind.in{color:var(--in)} .fkind.out{color:var(--out)}
 .fkind.bind{color:#7a3fbf} .fkind.unbind{color:#1d7a9a}
@@ -109,9 +110,9 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
 /* 站點流程 */
 .flow{padding:6px 14px 12px}
 .stop{display:flex;gap:12px}
-.stop .rail{flex:none;width:26px;display:flex;flex-direction:column;align-items:center}
-.stop .dot{width:26px;height:26px;border-radius:50%;border:2px solid var(--ink);
-  display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;background:#fff;flex:none}
+.stop .rail{flex:none;width:48px;display:flex;flex-direction:column;align-items:center}
+.stop .dot{min-width:48px;height:26px;border-radius:13px;border:2px solid var(--ink);
+  display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:900;background:#fff;flex:none;padding:0 4px}
 .stop.pk .dot{background:var(--yb)}
 .stop.dp .dot{background:var(--ink);color:var(--yb)}
 .stop .vline{flex:1;width:2px;background:var(--line);min-height:26px}
@@ -160,7 +161,6 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
 <body>
 <div class="wrap">
   <header><h1>智慧調度</h1><div class="clock" id="clock"></div></header>
-  <div class="subbar">DISPATCH&nbsp;ORDER&nbsp;·&nbsp;OR&nbsp;最佳化&nbsp;·&nbsp;含銜接</div>
 
   <!-- ══ 輸入畫面 ══ -->
   <section id="scrForm">
@@ -408,17 +408,29 @@ function solve(area,t,maxQ,spd,tor,BDG,startRec,adj){
 /* ═══ App 狀態 ═══ */
 const APP={pos:null,posLabel:'',emp:'',truck:'',zone:'',t:0,sol:null,idx:0,cum:0,
   acts:[],      // 同區共用活動紀錄(所有人的任務與綁/解車回報)
-  curAct:null,  // 我目前進行中的任務紀錄
-  adjSig:''};   // 上次求解時的庫存簽章,偵測他人新動態
+  myActs:[],    // 我這份班次的任務紀錄(對應 schedule 順序)
+  adjSig:''};   // 上次求解時「其他人」的庫存簽章,偵測新動態
 
 /* ═══ 同區共用紀錄層 ═══
    優先順序:window.storage(Claude 共用) → localStorage(同機多分頁) → 記憶體
    注意:localStorage 只能同一台裝置/瀏覽器互通;跨裝置即時同步需後端(見說明) */
+/* ★★ 跨裝置同步設定 ★★
+   部署好 Google Apps Script(見附的 Code.gs)後,把「網頁應用程式網址」貼到下面,
+   結尾是 /exec。留空 = 單機模式(僅同一台裝置的分頁互通)。 */
+const SYNC_URL='';
+
 const MEM={};
 let BC=null;try{BC=new BroadcastChannel('yb-dispatch')}catch(e){}
 const Store={
-  mode:(typeof window!=='undefined'&&window.storage&&window.storage.get)?'claude':'local',
+  mode:SYNC_URL?'gas':((typeof window!=='undefined'&&window.storage&&window.storage.get)?'claude':'local'),
   async load(zone){
+    if(this.mode==='gas'){
+      try{
+        const r=await fetch(SYNC_URL+'?zone='+encodeURIComponent(zone)+'&t='+Date.now());
+        const arr=await r.json();
+        return Array.isArray(arr)?arr:[];
+      }catch(e){return APP.acts||[]}   // 網路失敗沿用快取
+    }
     const key='act:'+zone;
     if(this.mode==='claude'){
       try{const r=await window.storage.get(key,true);return r&&r.value?JSON.parse(r.value):[]}
@@ -427,9 +439,29 @@ const Store={
     try{const v=localStorage.getItem(key);return v?JSON.parse(v):(MEM[key]||[])}
     catch(e){return MEM[key]||[]}
   },
-  async save(zone,acts){
+  /* 單筆增改/刪除:GAS 模式逐筆送出(不整包覆蓋,避免多人互洗資料) */
+  async upsert(zone,rec){
+    if(this.mode==='gas'){
+      try{await fetch(SYNC_URL,{method:'POST',body:JSON.stringify({op:'upsert',zone,rec})})}catch(e){}
+      return this.load(zone);
+    }
+    let acts=await this.load(zone);
+    const i=acts.findIndex(a=>a.id===rec.id);
+    if(i>=0)acts[i]=rec;else acts.push(rec);
+    return this._saveLocal(zone,acts);
+  },
+  async remove(zone,id){
+    if(this.mode==='gas'){
+      try{await fetch(SYNC_URL,{method:'POST',body:JSON.stringify({op:'remove',zone,id})})}catch(e){}
+      return this.load(zone);
+    }
+    let acts=await this.load(zone);
+    acts=acts.filter(a=>a.id!==id);
+    return this._saveLocal(zone,acts);
+  },
+  async _saveLocal(zone,acts){
     const key='act:'+zone;
-    const cut=Date.now()-12*3600*1000;               // 只留 12 小時內
+    const cut=Date.now()-12*3600*1000;
     acts=acts.filter(a=>(a.doneTs||a.ts)>=cut).slice(-200);
     if(this.mode==='claude'){
       try{await window.storage.set(key,JSON.stringify(acts),true)}catch(e){MEM[key]=acts}
@@ -441,18 +473,8 @@ const Store={
   }
 };
 
-/* 讀最新→合併我的異動→寫回(降低互相覆蓋機率) */
-async function upsertAct(rec){
-  let acts=await Store.load(APP.zone);
-  const i=acts.findIndex(a=>a.id===rec.id);
-  if(i>=0)acts[i]=rec;else acts.push(rec);
-  APP.acts=await Store.save(APP.zone,acts);
-}
-async function removeAct(id){
-  let acts=await Store.load(APP.zone);
-  acts=acts.filter(a=>a.id!==id);
-  APP.acts=await Store.save(APP.zone,acts);
-}
+async function upsertAct(rec){APP.acts=await Store.upsert(APP.zone,rec)}
+async function removeAct(id){APP.acts=await Store.remove(APP.zone,id)}
 
 /* 有效庫存增減:所有人「進行中(=已預約)+已完成」的搬移 + 綁/解車 */
 function effAdj(acts){
@@ -465,6 +487,8 @@ function effAdj(acts){
   return adj;
 }
 const adjSig=adj=>Object.keys(adj).sort().map(k=>k+':'+adj[k]).join(',');
+/* 只取「其他人」的異動簽章 — 自己的任務進度不該觸發重算提示 */
+const othersSig=acts=>adjSig(effAdj((acts||[]).filter(a=>a.emp!==APP.emp)));
 
 function newTaskAct(item){
   const c=item.trip;
@@ -480,8 +504,11 @@ function tHM(ts){const d=new Date(ts);return String(d.getHours()).padStart(2,'0'
 const KIND_TXT={in:['補車','in'],out:['拉車','out'],bind:['綁車','bind'],unbind:['解車','unbind']};
 function renderFeed(){
   const box=$('feedBox');if(!APP.zone){box.innerHTML='';return}
-  const others=(APP.acts||[]).filter(a=>a.emp!==APP.emp).sort((a,b)=>(b.doneTs||b.ts)-(a.doneTs||a.ts)).slice(0,8);
-  const items=others.map(a=>{
+  const STAT_ORD={'進行中':0,'未執行':1,'已完成':2};
+  const list=(APP.acts||[]).slice()
+    .sort((a,b)=>(STAT_ORD[a.status]??9)-(STAT_ORD[b.status]??9)||(b.doneTs||b.ts)-(a.doneTs||a.ts))
+    .slice(0,12);
+  const items=list.map(a=>{
     const kk=a.kind==='task'?a.type:a.kind;
     const[kt,kc]=KIND_TXT[kk]||['?',''];
     let route='';
@@ -490,15 +517,15 @@ function renderFeed(){
       const dp=a.stops.filter(s=>s.a!=='pickup').map(s=>s.st+'('+s.q+')').join('、');
       route=`<div class="froute">調出:${pk} → 調入:${dp}</div>`;
     }else route=`<div class="froute">${a.st} ${a.q} 輛</div>`;
-    const run=a.status==='進行中';
+    const sc=a.status==='進行中'?'run':a.status==='已完成'?'done':'todo';
+    const me=a.emp===APP.emp?'<span class="fme">我</span>':'';
     return`<li><div class="frow">
-      <span class="fst ${run?'run':'done'}">${a.status}</span>
+      <span class="fst ${sc}">${a.status}</span>
       <span class="fkind ${kc}">${kt}</span>
-      <span>${a.emp}${a.truck?'/'+a.truck:''}</span>
+      <span>${a.emp}${a.truck?'/'+a.truck:''}${me}</span>
       <span class="ftime">${tHM(a.doneTs||a.ts)}</span></div>${route}</li>`;
   }).join('');
-  const newAdj=adjSig(effAdj(APP.acts));
-  const stale=APP.sol&&newAdj!==APP.adjSig;
+  const stale=APP.sol&&othersSig(APP.acts)!==APP.adjSig;
   box.innerHTML=`<div class="feed">
     <div class="feed-h"><span>同區動態 ${APP.zone}</span>
       <span class="note" id="feedNote">${stale?'⚠️ 有新動態,建議重算':''}</span>
@@ -511,7 +538,7 @@ function renderFeed(){
       </div>
       <button class="r-send" id="rptSend" type="button">送出回報</button>
     </div>
-    ${items?`<ul>${items}</ul>`:'<div class="fempty">目前無其他調度員動態</div>'}
+    ${items?`<ul>${items}</ul>`:'<div class="fempty">目前無調度動態</div>'}
   </div>`;
   $('rptBtn').addEventListener('click',()=>$('rptForm').classList.toggle('hide'));
   $('rptSt').addEventListener('input',e=>{
@@ -529,12 +556,13 @@ function renderFeed(){
   });
 }
 
-/* 每 20 秒同步一次同區動態 */
+/* 每 30 秒同步一次同區動態(背景分頁暫停,節省後端額度) */
 setInterval(async()=>{
   if(!APP.zone||$('scrTask').classList.contains('hide'))return;
+  if(typeof document!=='undefined'&&document.hidden)return;
   APP.acts=await Store.load(APP.zone);
   renderFeed();
-},20000);
+},30000);
 if(BC)BC.onmessage=async e=>{
   if(e.data===APP.zone){APP.acts=await Store.load(APP.zone);renderFeed()}
 };
@@ -619,22 +647,32 @@ $('goBtn').addEventListener('click',async()=>{
   APP.acts=await Store.load(zone);
   const adj=effAdj(APP.acts);
   APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,BUDGET,pos,adj);
-  APP.adjSig=adjSig(adj);
+  APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
-  await claimCurrent();
+  await claimSchedule();
   $('scrForm').classList.add('hide');
   $('scrTask').classList.remove('hide');
   renderChips(note);renderFeed();renderTask();
   window.scrollTo(0,0);
 });
 
-/* 把目前任務登記為「進行中」讓同區其他人看見(=預約路線) */
-async function claimCurrent(){
-  APP.curAct=null;
-  const item=APP.sol&&APP.sol.schedule[APP.idx];
-  if(!item)return;
-  APP.curAct=newTaskAct(item);
-  await upsertAct(APP.curAct);
+/* 把整份班次登記到同區動態:目前趟=進行中、之後=未執行(皆視為已預約路線) */
+async function claimSchedule(){
+  APP.myActs=[];
+  if(!APP.sol)return;
+  for(let i=0;i<APP.sol.schedule.length;i++){
+    const rec=newTaskAct(APP.sol.schedule[i]);
+    rec.status=(i===APP.idx)?'進行中':'未執行';
+    APP.myActs[i]=rec;
+    await upsertAct(rec);
+  }
+}
+/* 釋放我尚未完成的登記(返回/重算時) */
+async function releaseMine(){
+  for(const rec of APP.myActs){
+    if(rec&&rec.status!=='已完成')await removeAct(rec.id);
+  }
+  APP.myActs=[];
 }
 
 function renderChips(note){
@@ -650,7 +688,7 @@ function renderChips(note){
 function renderTask(){
   const sol=APP.sol,i=APP.idx,box=$('taskBox');
   $('stepline').innerHTML=sol.schedule.length?
-    `任務 <b>${Math.min(i+1,sol.schedule.length)}</b> / ${sol.schedule.length} ・ 60分鐘班次規劃 ・ 累計 <b>${fm(APP.cum)}</b> 分`:'';
+    `任務 <b>${Math.min(i+1,sol.schedule.length)}</b> / ${sol.schedule.length} ・ 60分鐘班次規劃`:'';
 
   if(!sol.schedule.length){
     box.innerHTML=`<div class="empty">🎉 ${APP.zone} 目前無需調度<br>
@@ -683,7 +721,7 @@ function renderTask(){
     const s=sd[k];
     const pk=s.action==='pickup';
     flow+=`<div class="stop ${pk?'pk':'dp'}">
-      <div class="rail"><div class="dot">${pk?'取':'卸'}</div>${k<sd.length-1?'<div class="vline"></div>':''}</div>
+      <div class="rail"><div class="dot">${pk?'調出':'調入'}</div>${k<sd.length-1?'<div class="vline"></div>':''}</div>
       <div class="body">
         <div class="st-name">${s.station}</div>
         <div class="st-act">${pk?'調出':'調入'} ${s.qty} 輛</div>
@@ -740,16 +778,15 @@ $('doneBtn').addEventListener('click',async()=>{
   const item=APP.sol.schedule[APP.idx];
   if(item){
     APP.cum+=item.linkTime+item.trip.time;
-    if(APP.curAct){                       // 我的任務 → 已完成(搬移正式生效)
-      APP.curAct.status='已完成';APP.curAct.doneTs=Date.now();
-      await upsertAct(APP.curAct);
-    }
+    const cur=APP.myActs[APP.idx];
+    if(cur){cur.status='已完成';cur.doneTs=Date.now();await upsertAct(cur)}
     const endRec=item.trip.endRec;
     APP.pos={station:endRec.station,lat:endRec.lat,lng:endRec.lng};
     APP.posLabel=endRec.station;
   }
   APP.idx++;
-  await claimCurrent();                   // 登記下一任務為進行中
+  const nxt=APP.myActs[APP.idx];
+  if(nxt){nxt.status='進行中';await upsertAct(nxt)}   // 下一趟:未執行 → 進行中
   renderFeed();renderTask();window.scrollTo(0,0);
 });
 
@@ -757,18 +794,18 @@ $('doneBtn').addEventListener('click',async()=>{
 async function reSolve(){
   let t=nowHour();if(t<6)t=6;if(t>23)t=23;
   APP.t=t;
-  if(APP.curAct&&APP.curAct.status==='進行中')await removeAct(APP.curAct.id); // 釋放未完成的預約
+  await releaseMine();                    // 釋放尚未完成的預約
   APP.acts=await Store.load(APP.zone);
   const adj=effAdj(APP.acts);
   APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,BUDGET,APP.pos,adj);
-  APP.adjSig=adjSig(adj);
+  APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
-  await claimCurrent();
+  await claimSchedule();
   renderChips('');renderFeed();renderTask();window.scrollTo(0,0);
 }
 
 $('backBtn').addEventListener('click',async()=>{
-  if(APP.curAct&&APP.curAct.status==='進行中'){await removeAct(APP.curAct.id);APP.curAct=null}
+  await releaseMine();
   $('scrTask').classList.add('hide');
   $('scrForm').classList.remove('hide');
 });
