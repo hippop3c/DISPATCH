@@ -79,10 +79,15 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
 .rpt .r-st{flex:1;min-width:0}
 .rpt .r-q{width:70px}
 .rpt .r-send{width:100%;padding:10px;border:1.5px solid var(--ink);border-radius:8px;background:var(--yb);font-weight:900;cursor:pointer;font-family:inherit}
-.chiprow{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 12px}
+.chiprow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:10px 0 10px}
 .chip{background:var(--card);border:1.2px solid var(--ink);border-radius:999px;
-  font-size:.74rem;padding:4px 10px;font-weight:700}
-.chip span{color:var(--muted);font-weight:600;margin-right:3px}
+  font-size:.68rem;padding:4px 4px;font-weight:700;white-space:nowrap;
+  min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.chip span{color:var(--muted);font-weight:600;margin-right:2px}
+@media(max-width:420px){
+  .chip{font-size:.62rem;padding:3px 2px}
+  .chip span{margin-right:1px}
+}
 
 .bdg-row{display:flex;align-items:center;gap:8px;background:var(--card);
   border:1.5px solid var(--ink);border-radius:10px;padding:8px 12px;margin-bottom:10px;
@@ -912,16 +917,12 @@ async function releaseMine(){
 }
 
 function renderChips(note){
-  const dataLabel=RT.map?(RT.label||'即時庫存'):'歷史推估';
-  const routeLabel=ROUTE.source==='OSRM道路時間'?'道路時間':'距離估算';
   $('chips').innerHTML=
-    `<div class="chip"><span>員編</span>${APP.emp}</div>`+
-    `<div class="chip"><span>車號</span>${APP.truck}</div>`+
-    `<div class="chip"><span>責任區</span>${APP.zone}</div>`+
-    `<div class="chip"><span>時段</span>${APP.t}:00${note||''}</div>`+
-    `<div class="chip"><span>資料</span>${dataLabel}</div>`+
-    `<div class="chip"><span>路線</span>${routeLabel}</div>`+
-    `<div class="chip"><span>區內</span>缺車${APP.sol.shortC}站/滿柱${APP.sol.fullC}站</div>`;
+    `<div class="chip"><span>員</span>${APP.emp}</div>`+
+    `<div class="chip"><span>車</span>${APP.truck}</div>`+
+    `<div class="chip"><span>區</span>${APP.zone}</div>`+
+    `<div class="chip"><span>時</span>${APP.t}:00</div>`+
+    `<div class="chip"><span>缺/滿</span>${APP.sol.shortC}/${APP.sol.fullC}</div>`;
 }
 
 /* ═══ 任務渲染 ═══ */
@@ -996,11 +997,7 @@ function renderTask(){
   </div>`;
 
   const dataWarn=APP.rtChanged?'・場站資料已更新,建議重算':'';
-  const dataLabel=RT.map?(RT.label||'即時庫存'):'歷史推估';
-  const routeLabel=ROUTE.source==='OSRM道路時間'?(ROUTE.label||'道路時間'):'距離估算';
-  $('miniInfo').innerHTML=`本班次共 ${sol.schedule.length} 趟・預計調度 ${sol.totalVeh} 輛
-    ・資料 ${dataLabel}・路線 ${routeLabel}${dataWarn}
-    ・<a id="reSolve">依現在時間重算</a>`;
+  $('miniInfo').innerHTML=`本班次共 ${sol.schedule.length} 趟・預計調度 ${sol.totalVeh} 輛${dataWarn}・<a id="reSolve">依現在時間重算</a>`;
   $('reSolve').addEventListener('click',reSolve);
 }
 
