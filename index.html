@@ -178,6 +178,17 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
         <input id="truckId" autocomplete="off" placeholder="例:KEA-1234">
       </div>
       <div class="fld">
+        <label>班次時間<span class="req">＊</span></label>
+        <select id="budgetSel">
+          <option value="30">30 分鐘</option>
+          <option value="45">45 分鐘</option>
+          <option value="60" selected>60 分鐘</option>
+          <option value="75">75 分鐘</option>
+          <option value="90">90 分鐘</option>
+          <option value="120">120 分鐘</option>
+        </select>
+      </div>
+      <div class="fld">
         <label>目前地點<span class="req">＊</span></label>
         <div class="loc-row">
           <input id="locInput" list="stationList" autocomplete="off" placeholder="輸入場站名稱,或按定位">
@@ -212,8 +223,8 @@ const DATA=RAW.map(r=>({code:r[0],station:r[1],city:r[2],district:r[3],area:r[4]
   capacity:r[5],lat:r[6],lng:r[7],deltas:r[8]}));
 
 /* ═══ OR 參數(同原版) ═══ */
-const SETUP=1, WORK_MIN=2, MIN_Q=3, ROAD_K=1.4;  // 整備1分/站,裝卸2分/輛
-const TOR=1.0, MAXQ=14, BUDGET=60, DRIVE_BUF=2;  // 貨車容量14,班次預算60分,每段行車固定+2分(起步/停車緩衝)
+const SETUP=2, WORK_MIN=2, MIN_Q=3, ROAD_K=1.0;  // 整備2分/站,裝卸2分/輛;道路係數1=直線距離即道路距離
+const TOR=1.0, MAXQ=14, BUDGET_DEF=60, DRIVE_BUF=2;  // 貨車容量14,班次預算預設60分(可於表單選擇),每段行車固定+2分
 /* 依裝置當下時段調整行車車速(市區貨車實際速度) */
 function spdAt(h){
   if((h>=7&&h<=9)||(h>=17&&h<=19))return 10;  // 尖峰
@@ -444,7 +455,7 @@ function solve(area,t,maxQ,spd,tor,BDG,startRec,adj,rt){
 }
 
 /* ═══ App 狀態 ═══ */
-const APP={pos:null,posLabel:'',emp:'',truck:'',zone:'',t:0,sol:null,idx:0,cum:0,
+const APP={pos:null,posLabel:'',emp:'',truck:'',zone:'',t:0,sol:null,idx:0,cum:0,budget:BUDGET_DEF,
   acts:[],      // 同區共用活動紀錄(所有人的任務與綁/解車回報)
   myActs:[],    // 我這份班次的任務紀錄(對應 schedule 順序)
   adjSig:''};   // 上次求解時「其他人」的庫存簽章,偵測新動態
@@ -702,12 +713,13 @@ $('goBtn').addEventListener('click',async()=>{
   if(t>23)t=23;
 
   APP.emp=emp;APP.truck=truck;APP.zone=zone;APP.pos=pos;APP.posLabel=posLabel;APP.t=t;
+  APP.budget=+$('budgetSel').value||BUDGET_DEF;
   $('goBtn').textContent='讀取即時場站資料…';
   await loadRealtime();
   $('goBtn').textContent='派 發 任 務';
   APP.acts=await Store.load(zone);
   const adj=effAdj(APP.acts);
-  APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,BUDGET,pos,adj,RT.map);
+  APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,APP.budget,pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
   await claimSchedule();
@@ -750,7 +762,7 @@ function renderChips(note){
 function renderTask(){
   const sol=APP.sol,i=APP.idx,box=$('taskBox');
   $('stepline').innerHTML=sol.schedule.length?
-    `任務 <b>${Math.min(i+1,sol.schedule.length)}</b> / ${sol.schedule.length} ・ 60分鐘班次規劃`:'';
+    `任務 <b>${Math.min(i+1,sol.schedule.length)}</b> / ${sol.schedule.length} ・ ${APP.budget}分鐘班次規劃`:'';
 
   if(!sol.schedule.length){
     box.innerHTML=`<div class="empty">🎉 ${APP.zone} 目前無需調度<br>
@@ -792,7 +804,7 @@ function renderTask(){
   flow+='</div>';
 
   const cum=APP.cum+item.linkTime+c.time;
-  const pct=Math.min(100,cum/BUDGET*100);
+  const pct=Math.min(100,cum/APP.budget*100);
   const pgc=pct<60?'':pct<85?'warn':'over';
 
   box.innerHTML=`<div class="task-card">
@@ -809,7 +821,7 @@ function renderTask(){
     <div class="est-line">⏱ 本趟預計 <b>${Math.ceil(item.linkTime+c.time)}</b> 分鐘</div>
     <div class="pg-wrap">
       <div class="pg-track"><div class="pg-fill ${pgc}" style="width:${pct}%"></div></div>
-      <div class="pg-txt">完成後累計 ${fm(cum)} / ${BUDGET} 分(${pct.toFixed(0)}%)</div>
+      <div class="pg-txt">完成後累計 ${fm(cum)} / ${APP.budget} 分(${pct.toFixed(0)}%)</div>
     </div>
   </div>`;
 
@@ -822,7 +834,7 @@ function renderFinish(){
   const sol=APP.sol;
   $('taskBox').innerHTML=`<div class="fin">
     <div class="big">✔ 班次完成</div>
-    <div class="lbl">本 60 分鐘班次任務已全數執行</div>
+    <div class="lbl">本 ${APP.budget} 分鐘班次任務已全數執行</div>
     <div class="fin-grid">
       <div class="cg"><div class="v">${sol.totalVeh}</div><div class="l">總調度(輛)</div></div>
       <div class="cg"><div class="v">${sol.schedule.length}</div><div class="l">趟次</div></div>
@@ -860,7 +872,7 @@ async function reSolve(){
   await loadRealtime();
   APP.acts=await Store.load(APP.zone);
   const adj=effAdj(APP.acts);
-  APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,BUDGET,APP.pos,adj,RT.map);
+  APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,APP.budget,APP.pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
   await claimSchedule();
