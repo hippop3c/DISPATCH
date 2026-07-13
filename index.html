@@ -212,13 +212,13 @@ const DATA=RAW.map(r=>({code:r[0],station:r[1],city:r[2],district:r[3],area:r[4]
   capacity:r[5],lat:r[6],lng:r[7],deltas:r[8]}));
 
 /* ═══ OR 參數(同原版) ═══ */
-const SETUP=5, MIN_Q=3, ROAD_K=1.4;
+const SETUP=1, WORK_MIN=2, MIN_Q=3, ROAD_K=1.4;  // 整備1分/站,裝卸2分/輛
 const TOR=1.0, MAXQ=14, BUDGET=60, DRIVE_BUF=2;  // 貨車容量14,班次預算60分,每段行車固定+2分(起步/停車緩衝)
 /* 依裝置當下時段調整行車車速(市區貨車實際速度) */
 function spdAt(h){
-  if((h>=7&&h<=9)||(h>=17&&h<=19))return 15;  // 尖峰
-  if(h>=20)return 25;                          // 夜間
-  return 20;                                   // 離峰
+  if((h>=7&&h<=9)||(h>=17&&h<=19))return 10;  // 尖峰
+  if(h>=20)return 20;                          // 夜間
+  return 15;                                   // 離峰
 }
 const $=id=>document.getElementById(id);
 
@@ -234,9 +234,9 @@ function stockAt(r,t){let s=0;for(let h=6;h<=t;h++)s+=Number(r.deltas[h-6]||0);r
 function tTime(stops,spd,tor){
   let su=0,wk=0,tv=0;const sd=[],sg=[];
   for(let i=0;i<stops.length;i++){
-    su+=SETUP;wk+=stops[i].qty;
+    su+=SETUP;wk+=stops[i].qty*WORK_MIN;
     sd.push({station:stops[i].station,qty:stops[i].qty,action:stops[i].action,
-             setup:SETUP,work:stops[i].qty,stTime:SETUP+stops[i].qty});
+             setup:SETUP,work:stops[i].qty*WORK_MIN,stTime:SETUP+stops[i].qty*WORK_MIN});
     if(i<stops.length-1){
       const d=rKm(stops[i].rec,stops[i+1].rec);
       const t2=drv(stops[i].rec,stops[i+1].rec,spd,tor);
@@ -324,8 +324,8 @@ function solve(area,t,maxQ,spd,tor,BDG,startRec,adj){
   function expandState(state){
     const{sup,dem,timeUsed,curEndRec}=state;
     const timeLeft=BDG-timeUsed;
-    if(timeLeft<SETUP*2+2)return[];
-    const dynMinQ=(timeLeft>=SETUP*2+MIN_Q*2)?MIN_Q:1;
+    if(timeLeft<SETUP*2+WORK_MIN)return[];
+    const dynMinQ=(timeLeft>=SETUP*2+MIN_Q*2*WORK_MIN)?MIN_Q:1;
     let allTrips=[];
     for(const[st,need]of Object.entries(dem)){
       if(need<dynMinQ)continue;
