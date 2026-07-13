@@ -84,6 +84,14 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
   font-size:.74rem;padding:4px 10px;font-weight:700}
 .chip span{color:var(--muted);font-weight:600;margin-right:3px}
 
+.bdg-row{display:flex;align-items:center;gap:8px;background:var(--card);
+  border:1.5px solid var(--ink);border-radius:10px;padding:8px 12px;margin-bottom:10px;
+  box-shadow:3px 3px 0 rgba(28,26,18,.1)}
+.bdg-row .bdg-lb{font-size:.8rem;font-weight:900;letter-spacing:.06em}
+.bdg-row select{flex:none;font-size:.95rem;font-weight:800;padding:6px 8px;
+  border:1.5px solid var(--ink);border-radius:8px;background:var(--yb);font-family:inherit}
+.bdg-row .bdg-hint{margin-left:auto;font-size:.68rem;color:var(--muted);font-weight:700}
+.st-now{font-size:.76rem;color:var(--muted);font-weight:700;margin-left:6px;white-space:nowrap}
 .stepline{display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--muted);
   margin:4px 2px 10px;font-weight:700}
 .stepline b{color:var(--ink)}
@@ -178,17 +186,6 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
         <input id="truckId" autocomplete="off" placeholder="例:KEA-1234">
       </div>
       <div class="fld">
-        <label>班次時間<span class="req">＊</span></label>
-        <select id="budgetSel">
-          <option value="30">30 分鐘</option>
-          <option value="45">45 分鐘</option>
-          <option value="60" selected>60 分鐘</option>
-          <option value="75">75 分鐘</option>
-          <option value="90">90 分鐘</option>
-          <option value="120">120 分鐘</option>
-        </select>
-      </div>
-      <div class="fld">
         <label>目前地點<span class="req">＊</span></label>
         <div class="loc-row">
           <input id="locInput" list="stationList" autocomplete="off" placeholder="輸入場站名稱,或按定位">
@@ -206,6 +203,18 @@ header .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:.95rem
   <section id="scrTask" class="hide">
     <div id="feedBox"></div>
     <div class="chiprow" id="chips"></div>
+    <div class="bdg-row">
+      <span class="bdg-lb">任務規劃時間</span>
+      <select id="budgetSel">
+        <option value="30">30 分鐘</option>
+        <option value="45">45 分鐘</option>
+        <option value="60" selected>60 分鐘</option>
+        <option value="75">75 分鐘</option>
+        <option value="90">90 分鐘</option>
+        <option value="120">120 分鐘</option>
+      </select>
+      <span class="bdg-hint">變更後自動重新規劃</span>
+    </div>
     <div class="stepline" id="stepline"></div>
     <div id="taskBox"></div>
     <div class="act-row" id="actRow">
@@ -244,7 +253,7 @@ const RT_TTL=10*60*1000;      // 10 分鐘內沿用上次抓的快照
 const TGT_RATIO=0.5;          // 補車目標水位:柱位 × 0.5(無條件進位)
 const LOW_N=2;                // 可借 ≤ 2 → 缺車站
 const FULL_N=2;               // 可還 ≤ 2 → 滿柱站(需清車)
-let RT={label:null,map:null,fetchedAt:0};
+let RT={label:null,map:null,fetchedAt:0,ts:0};
 async function loadRealtime(){
   if(RT.map&&Date.now()-RT.fetchedAt<RT_TTL)return RT;
   try{
@@ -253,7 +262,8 @@ async function loadRealtime(){
     const last=dates[dates.length-1];
     const day=await(await fetch(RT_BASE+'/'+last+'.json?t='+Date.now())).json();
     const snap=day[day.length-1];
-    RT={label:last.slice(5)+' '+snap.time,map:snap.stations,fetchedAt:Date.now()};
+    RT={label:last.slice(5)+' '+snap.time,map:snap.stations,fetchedAt:Date.now(),
+        ts:snap.datetime?new Date(snap.datetime).getTime():Date.now()};
   }catch(e){/* 抓不到就維持 null → 自動回退歷史推估 */}
   return RT;
 }
@@ -526,9 +536,12 @@ async function upsertAct(rec){APP.acts=await Store.upsert(APP.zone,rec)}
 async function removeAct(id){APP.acts=await Store.remove(APP.zone,id)}
 
 /* 有效庫存增減:所有人「進行中(=已預約)+已完成」的搬移 + 綁/解車 */
-function effAdj(acts){
+function effAdj(acts,cutoff){
+  cutoff=cutoff||0;   // 使用即時快照時,快照時間前已完成的搬移不疊加(實體結果已反映在快照中)
   const adj={};
   for(const a of acts||[]){
+    const done=a.status==='已完成';
+    if(done&&(a.doneTs||a.ts||0)<=cutoff)continue;   // 進行中/未執行=未來動作,一律疊加
     if(a.kind==='task'){for(const s of a.stops)adj[s.st]=(adj[s.st]||0)+(s.a==='pickup'?-s.q:+s.q)}
     else if(a.kind==='bind')adj[a.st]=(adj[a.st]||0)-a.q;
     else if(a.kind==='unbind')adj[a.st]=(adj[a.st]||0)+a.q;
@@ -645,6 +658,10 @@ function initForm(){
     $('stationList').innerHTML=z?DATA.filter(d=>d.area===z).slice(0,80)
       .map(d=>`<option value="${d.station}">${d.district}</option>`).join(''):'';
   });
+  $('budgetSel').addEventListener('change',async()=>{
+    APP.budget=+$('budgetSel').value||BUDGET_DEF;
+    if(APP.sol&&!$('scrTask').classList.contains('hide'))await reSolve(); // 依新參數即時重排
+  });
   setInterval(()=>$('clock').textContent=clockTxt(),1000);
   $('clock').textContent=clockTxt();
 }
@@ -718,7 +735,10 @@ $('goBtn').addEventListener('click',async()=>{
   await loadRealtime();
   $('goBtn').textContent='派 發 任 務';
   APP.acts=await Store.load(zone);
-  const adj=effAdj(APP.acts);
+  // 清掉我自己先前未完成的殘留登記(例如頁面重整後遺留),避免重複預約
+  for(const a of APP.acts.filter(a=>a.emp===emp&&a.kind==='task'&&a.status!=='已完成'))
+    await removeAct(a.id);
+  const adj=effAdj(APP.acts,RT.map?RT.ts:0);
   APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,APP.budget,pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
@@ -754,7 +774,6 @@ function renderChips(note){
     `<div class="chip"><span>車號</span>${APP.truck}</div>`+
     `<div class="chip"><span>責任區</span>${APP.zone}</div>`+
     `<div class="chip"><span>時段</span>${APP.t}:00${note||''}</div>`+
-    `<div class="chip"><span>庫存</span>${RT.map?'即時 '+RT.label:'歷史推估'}</div>`+
     `<div class="chip"><span>區內</span>缺車${APP.sol.shortC}站/滿柱${APP.sol.fullC}站</div>`;
 }
 
@@ -794,10 +813,13 @@ function renderTask(){
   for(let k=0;k<sd.length;k++){
     const s=sd[k];
     const pk=s.action==='pickup';
+    const rec=DATA.find(r=>r.station===s.station);
+    const v=rec?rtOf(rec):null;
+    const now=v?`<span class="st-now">(現況 ${v[0]} 車 / ${v[1]} 位)</span>`:'';
     flow+=`<div class="stop ${pk?'pk':'dp'}">
       <div class="rail"><div class="dot">${pk?'調出':'調入'}</div>${k<sd.length-1?'<div class="vline"></div>':''}</div>
       <div class="body">
-        <div class="st-name">${s.station}</div>
+        <div class="st-name">${s.station}${now}</div>
         <div class="st-act">${pk?'調出':'調入'} ${s.qty} 輛</div>
       </div></div>`;
   }
@@ -871,7 +893,7 @@ async function reSolve(){
   await releaseMine();                    // 釋放尚未完成的預約
   await loadRealtime();
   APP.acts=await Store.load(APP.zone);
-  const adj=effAdj(APP.acts);
+  const adj=effAdj(APP.acts,RT.map?RT.ts:0);
   APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,APP.budget,APP.pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
