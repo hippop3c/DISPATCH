@@ -227,7 +227,28 @@ function hav(a,b){if(!a||!b||a.lat==null||b.lat==null)return 0;const R=6371,r=Ma
 function rKm(a,b){return hav(a,b)*ROAD_K}
 function drv(a,b,s,t){const km=rKm(a,b);if(km<=0.001)return 0;return km*t/s*60+DRIVE_BUF}
 
-/* ═══ 庫存:6時起累積 deltas(同原版 stockAt) ═══ */
+/* ═══ 即時場站資料(stationv3 每日快照,同網域直接抓) ═══ */
+const RT_BASE='https://hippop3c.github.io/stationv3/data';
+const RT_TTL=10*60*1000;      // 10 分鐘內沿用上次抓的快照
+const TGT_RATIO=0.5;          // 補車目標水位:柱位 × 0.5(無條件進位)
+const LOW_N=2;                // 可借 ≤ 2 → 缺車站
+const FULL_N=2;               // 可還 ≤ 2 → 滿柱站(需清車)
+let RT={label:null,map:null,fetchedAt:0};
+async function loadRealtime(){
+  if(RT.map&&Date.now()-RT.fetchedAt<RT_TTL)return RT;
+  try{
+    const idx=await(await fetch(RT_BASE+'/index.json?t='+Date.now())).json();
+    const dates=Object.keys(idx).sort();
+    const last=dates[dates.length-1];
+    const day=await(await fetch(RT_BASE+'/'+last+'.json?t='+Date.now())).json();
+    const snap=day[day.length-1];
+    RT={label:last.slice(5)+' '+snap.time,map:snap.stations,fetchedAt:Date.now()};
+  }catch(e){/* 抓不到就維持 null → 自動回退歷史推估 */}
+  return RT;
+}
+function rtOf(r){if(!RT.map)return null;return RT.map['TPE'+r.code]||RT.map['NWT'+r.code]||null}
+
+/* ═══ 庫存:6時起累積 deltas(同原版 stockAt;無即時資料時的回退) ═══ */
 function stockAt(r,t){let s=0;for(let h=6;h<=t;h++)s+=Number(r.deltas[h-6]||0);return s}
 
 /* ═══ 趟內耗時:每站整備5分+裝卸每輛1分+站間行車(同原版) ═══ */
@@ -247,16 +268,32 @@ function tTime(stops,spd,tor){
 }
 
 /* ═══ OR ENGINE:Beam Search,含銜接行車(同原版 solve,起點改為人員目前位置) ═══ */
-function solve(area,t,maxQ,spd,tor,BDG,startRec,adj){
+function solve(area,t,maxQ,spd,tor,BDG,startRec,adj,rt){
   adj=adj||{};
+  const useRT=!!rt;
   const recs=DATA.filter(r=>r.area===area);
   const recMap={},initSup={},initDem={};
-  const stkOf=r=>stockAt(r,t)+(adj[r.station]||0);  // 疊加本班已完成的搬移
+  const fullSet=new Set();
+  const stkOf=r=>stockAt(r,t)+(adj[r.station]||0);  // 歷史推估 + 已預約搬移
   for(const r of recs){
     recMap[r.station]=r;
-    const stk=stkOf(r);
-    if(stk>0)initSup[r.station]=stk;
-    if(stk<0)initDem[r.station]=Math.abs(stk);
+    if(useRT){
+      const v=rt['TPE'+r.code]||rt['NWT'+r.code];
+      if(!v)continue;
+      const a=adj[r.station]||0;
+      const b=Math.max(0,v[0]+a);              // 實際可借 + 已預約增減
+      const f=Math.max(0,v[1]-a);              // 實際可還空位
+      const tgt=Math.ceil(r.capacity*TGT_RATIO);
+      const dH=Number(r.deltas[Math.min(Math.max(t,6),23)-6]||0);
+      const proj=b+dH;                          // 依歷史流量往後看 1 小時
+      if(Math.min(b,proj)<=LOW_N&&tgt-b>0){initDem[r.station]=tgt-b}
+      else if(b-tgt>0){initSup[r.station]=b-tgt}
+      if(f<=FULL_N&&b-tgt>0)fullSet.add(r.station); // 滿柱必清
+    }else{
+      const stk=stkOf(r);
+      if(stk>0)initSup[r.station]=stk;
+      if(stk<0)initDem[r.station]=Math.abs(stk);
+    }
   }
 
   function genIn(tgtSt,sup,dem,timeLeft,minQ){
@@ -332,8 +369,8 @@ function solve(area,t,maxQ,spd,tor,BDG,startRec,adj){
       allTrips.push(...genIn(st,sup,dem,timeLeft,dynMinQ));
     }
     for(const[st,av]of Object.entries(sup)){
-      const stk=stkOf(recMap[st]);
-      if(stk>recMap[st].capacity&&av>=dynMinQ)
+      const isFull=useRT?fullSet.has(st):(stkOf(recMap[st])>recMap[st].capacity);
+      if(isFull&&av>=dynMinQ)
         allTrips.push(...genOut(st,sup,dem,timeLeft,dynMinQ));
     }
     if(!allTrips.length)return[];
@@ -401,7 +438,8 @@ function solve(area,t,maxQ,spd,tor,BDG,startRec,adj){
   }
   return{schedule:bestState.schedule,totalVeh:bestState.totalVeh,
     totalTime:bestState.timeUsed,totalLink:bestState.schedule.reduce((s,x)=>s+x.linkTime,0),
-    shortC:Object.keys(initDem).length,fullC:recs.filter(r=>stockAt(r,t)>r.capacity).length,
+    shortC:Object.keys(initDem).length,
+    fullC:useRT?fullSet.size:recs.filter(r=>stockAt(r,t)>r.capacity).length,
     stationN:recs.length};
 }
 
@@ -664,9 +702,12 @@ $('goBtn').addEventListener('click',async()=>{
   if(t>23)t=23;
 
   APP.emp=emp;APP.truck=truck;APP.zone=zone;APP.pos=pos;APP.posLabel=posLabel;APP.t=t;
+  $('goBtn').textContent='讀取即時場站資料…';
+  await loadRealtime();
+  $('goBtn').textContent='派 發 任 務';
   APP.acts=await Store.load(zone);
   const adj=effAdj(APP.acts);
-  APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,BUDGET,pos,adj);
+  APP.sol=solve(zone,t,MAXQ,spdAt(t),TOR,BUDGET,pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
   await claimSchedule();
@@ -701,6 +742,7 @@ function renderChips(note){
     `<div class="chip"><span>車號</span>${APP.truck}</div>`+
     `<div class="chip"><span>責任區</span>${APP.zone}</div>`+
     `<div class="chip"><span>時段</span>${APP.t}:00${note||''}</div>`+
+    `<div class="chip"><span>庫存</span>${RT.map?'即時 '+RT.label:'歷史推估'}</div>`+
     `<div class="chip"><span>區內</span>缺車${APP.sol.shortC}站/滿柱${APP.sol.fullC}站</div>`;
 }
 
@@ -712,7 +754,7 @@ function renderTask(){
 
   if(!sol.schedule.length){
     box.innerHTML=`<div class="empty">🎉 ${APP.zone} 目前無需調度<br>
-      <span style="font-size:.78rem">本時段區內無缺車(≥${MIN_Q}輛)且無滿柱場站</span></div>`;
+      <span style="font-size:.78rem">${RT.map?'依即時庫存,':''}區內無缺車(≥${MIN_Q}輛)且無滿柱場站</span></div>`;
     $('doneBtn').classList.add('hide');$('miniInfo').innerHTML='';
     return;
   }
@@ -815,9 +857,10 @@ async function reSolve(){
   let t=nowHour();if(t<6)t=6;if(t>23)t=23;
   APP.t=t;
   await releaseMine();                    // 釋放尚未完成的預約
+  await loadRealtime();
   APP.acts=await Store.load(APP.zone);
   const adj=effAdj(APP.acts);
-  APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,BUDGET,APP.pos,adj);
+  APP.sol=solve(APP.zone,t,MAXQ,spdAt(t),TOR,BUDGET,APP.pos,adj,RT.map);
   APP.adjSig=othersSig(APP.acts);
   APP.idx=0;APP.cum=0;
   await claimSchedule();
