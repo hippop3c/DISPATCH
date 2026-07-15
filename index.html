@@ -263,9 +263,12 @@ function routeMetric(a,b){
   return ROUTE.map[pairKey(a,b)]||null;
 }
 function driveKm(a,b){const m=routeMetric(a,b);return m?m.km:rKm(a,b)}
+/* OSRM 回傳為順暢路況行車時間,依時段車速換算壅塞係數:
+   尖峰(10km/h)×2、離峰(15km/h)×1.2、夜間(20km/h)×1.0;OSRM 路徑時間不另加緩衝 */
+function osrmFactor(s){return s<=10?2.0:(s<=15?1.2:1.0)}
 function drv(a,b,s,t){
   const m=routeMetric(a,b);
-  if(m)return m.min<=0.05?0:m.min+DRIVE_BUF;
+  if(m)return m.min<=0.05?0:m.min*osrmFactor(s);
   const km=rKm(a,b);if(km<=0.001)return 0;return km*t/s*60+DRIVE_BUF;
 }
 async function loadRouteMatrix(area,startRec){
